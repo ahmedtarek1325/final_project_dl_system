@@ -537,7 +537,7 @@ void MatmulTiled(const AlignedArray& a, const AlignedArray& b, AlignedArray* out
   /// END YOUR SOLUTION
 }
   /// END YOUR SOLUTION
-}
+
 
 void ReduceMax(const AlignedArray& a, AlignedArray* out, size_t reduce_size) {
   /**
