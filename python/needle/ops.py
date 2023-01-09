@@ -737,23 +737,29 @@ class BMM(TensorOp):
                                               f" But got {a.shape} and {b.shape}"
         
         if len(a.shape) > 3: 
-            size= 1
-            for i in a.shape[:-2]:  size= size*i
-            new_shape= [size].extend(list(a.shape[-2]))
-            new_a = a.compact().rehsape((new_shape))
-            new_b = b.compact().rehsape((new_shape))
+            size_a , size_b = a.size,b.size
+            new_shape_a = [int(size_a/(a.shape[-1]*a.shape[-2]))] 
+            new_shape_b = [int(size_b/(b.shape[-1]*b.shape[-2]))] 
+            new_shape_a.extend(list(a.shape[-2:]))
+            new_shape_b.extend(list(b.shape[-2:]))
+            new_a = a.compact().reshape((new_shape_a))
+            new_b = b.compact().reshape((new_shape_b))
         else: 
             new_a =a
             new_b= b
-        
+        # now we have (B,H,W) for both a,b no matter how many tensors we have
+
         output_ = []
         for i in range(new_a.shape[0]):
-            output_.append(new_a[i,:,:]@new_b[i,:,:])
-
-        output = stack(output_,axis= 0)     
+            curr_a = new_a[i,:,:].compact().reshape((a.shape[-2],a.shape[-1]))
+            curr_b = new_b[i,:,:].compact().reshape((b.shape[-2],b.shape[-1]))
+            c = curr_a@ curr_b
+            output_ += [Tensor(c)]
+        
+        output = stack(output_,axis  = 0)    
         output_shape = list(a.shape)
         output_shape[-1] = b.shape[-1]
-        return output.compact().reshape((output_shape))
+        return output.reshape((output_shape))
 
     def gradient(self, out_grad, node):
         raise NotImplementedError()
@@ -783,9 +789,16 @@ class Split_group(TensorTupleOp):
         axes.pop(self.axis)        
         axes.insert(0,self.axis)
         axis_ratio =int(axis_dim/self.splits)
+
+        new_axes= list(range(len(A.shape)))
+        new_axes.pop(0)        
+        new_axes.insert(self.axis,0)
+        
         shape = list(A.shape)
         shape.pop(self.axis)   
-        shape.insert(0,axis_ratio)      
+        shape.insert(0,axis_ratio)
+
+
         size =  int(A.size / A.shape[self.axis])
         A= A.permute(axes).compact().reshape((A.shape[self.axis],size))        
         axis_ratio =int(axis_dim/self.splits)
@@ -793,16 +806,24 @@ class Split_group(TensorTupleOp):
                                 device =A.device,
                                 dtype = A.dtype ) 
                             for i in range(self.splits)] 
+
+        
+
         for i in range(self.splits):
             print("hello !")
             print(A.shape,axis_ratio)
+            
             B= A[i*axis_ratio:i*axis_ratio+axis_ratio,:]
             print(f"B sshapeis {B.shape} can i shape it to {shape}")
             args[i] = B.compact().reshape(shape)
-            args[i] = args[i].permute(axes)
-            print(f"am here now")
+            print(new_axes)
+            args[i] = args[i].permute(new_axes)
+            print(f"final shape is {args[i].shape}")
         
-        return args 
+        return args           
+        ### END YOUR SOLUTION
+def split_group(a, axis,splits_num):
+    return Split_group(axis,splits_num)(a)
 
 ########################################################3
 class Concatenate(TensorOp):
@@ -818,25 +839,43 @@ class Concatenate(TensorOp):
         ### BEGIN YOUR SOLUTION
         
         # assert check that all arrays of the same size
-        shape= list(args[0].shape)
+        shape= args[0].shape
         for tensor_ in args: 
-            assert tensor_.shape == shape , "shape Does NOT match to stack"
+            assert tensor_.shape == shape , f"shape Does NOT match to concatenate"\
+                                            f" {tensor_.shape} SHOUL BE {shape}"
 
-        size= args[0].size / shape[self.axis]
-        concatenated_arr = array_api.empty((len(args)*shape[self.axis],size),
+        # now we want to reshpe the all the args to be 
+        # in the shape of (D,size/D) where D is the number of dim 
+        #  along the specified matrix axis for every arg
+        shape= list(shape)
+        size= int(args[0].size / shape[self.axis])
+        concatenated_arr = array_api.empty((int(len(args)*shape[self.axis]),size),
                                        device = args[0].device,
                                        dtype=args[0].dtype)
-        axes= list(range(len(shape))) ###@@@ ADD
-        axes.pop(self.axis)###@@@ ADD
-        axes.insert(0,self.axis)###@@@ ADD
-
+        
+        # but before oing reshping, wehave to now we want to permute the axes
+        # to reargange the matrices in the right manner and have thems stored
+        # in a contagious manner, berfore concatenating them
+        axes= list(range(len(shape))) 
+        axes.pop(self.axis)
+        axes.insert(0,self.axis)
+        
+        # let's say our arg.shape is B,C,H,W and we want to concate over C
+        # then below we have B,C,H,W --> C,B,H,W "Permutation" then
+        #  C,B,H,W  --> c,B**H*W
         for i,arg in enumerate(args): 
-            concatenated_arr[i*shape[self.axis]:i*shape[self.axis]+shape[self.axis], :] = arg.permute(axes).compact().reshape((shape[self.axis], size))
-
-        axis1 = len(args)*shape[self.axis]
+            concatenated_arr[i*shape[self.axis]:i*shape[self.axis]+shape[self.axis], :] = \
+                      arg.permute(axes).compact().reshape((shape[self.axis], size))
+        
+        # NOW AFter concatenation, 
+        # we want to retrieve back the orignal dim but before ddoing this
+        # we reshpe first  and then we permute again
+        org_axes = len(args)*shape[self.axis]
         shape.pop(self.axis)
-
-        return concatenated_arr.compact().reshape((axis1, *shape)).permute(axes)
+        new_axes = list(range(1,len(args[0].shape)))
+        new_axes.insert(self.axis,0)
+        
+        return concatenated_arr.compact().reshape((org_axes, *shape)).permute(new_axes)
         ### END YOUR SOLUTION
 
 
@@ -847,4 +886,4 @@ class Concatenate(TensorOp):
 
 
 def concat(args, axis):
-    return Stack(axis)(make_tuple(*args))
+    return Concatenate(axis)(make_tuple(*args))
